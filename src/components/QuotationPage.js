@@ -2,10 +2,12 @@ import React, { useState } from "react";
 import { Button, DropdownButton, Dropdown } from "react-bootstrap";
 import DataTable from "react-data-table-component";
 import { CSVLink } from "react-csv";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import "./QuotationPage.css";
+
+const SQFT_TO_M2 = 0.092903; // conversion constant
 
 const QuotationPage = () => {
   // ------------------ STATIC TABLE DATA ------------------
@@ -20,6 +22,7 @@ const QuotationPage = () => {
       shade: "",
       rate: 1500.0,
       amount: 5175.0,
+      gstRate: null, // <-- per-row GST %
     },
     {
       sn: 2,
@@ -31,6 +34,7 @@ const QuotationPage = () => {
       shade: "BDF 5880",
       rate: 1500.0,
       amount: 6240.0,
+      gstRate: null,
     },
     {
       sn: 3,
@@ -42,13 +46,17 @@ const QuotationPage = () => {
       shade: "",
       rate: 1500.0,
       amount: 3022.5,
+      gstRate: null,
     },
   ];
 
   const [tableData, setTableData] = useState(initialTableData);
 
-  const grandTotal = 17370; // with fixing charge
+  // const grandTotal = 17370; // with fixing charge
   const [gstRate, setGstRate] = useState(12); // default GST 12%
+
+  // ---------- NEW: measurement unit (cm or sqft) ----------
+  const [measurementUnit, setMeasurementUnit] = useState("cm");
 
   // REPLACE computedData mapping with this derived calculation
   const computedData = tableData.map((r, idx) => {
@@ -57,11 +65,17 @@ const QuotationPage = () => {
     const nos = Number(r.nos || 0);
     const rate = Number(r.rate || 0);
 
-    const areaPerItem = (width / 100) * (drop / 100); // m^2
-    const totalArea = areaPerItem * nos;
-    const amount = totalArea * rate;
+    // In table we keep AREA as m^2 (same as before)
+    const area_m2 = Number(r.area || 0);
+    const amount = Number(r.amount || 0);
 
-    const gst = parseFloat((amount * (gstRate / 100)).toFixed(2));
+    // Use per-row GST if present; otherwise fall back to global gstRate state
+    const rowGstPercent = Number(
+      // r.gstRate may be 0, so explicit nullish fallback is safer:
+      r.gstRate == null ? gstRate : r.gstRate
+    );
+
+    const gst = parseFloat((amount * (rowGstPercent / 100)).toFixed(2));
     const total = parseFloat((amount + gst).toFixed(2));
 
     return {
@@ -71,9 +85,10 @@ const QuotationPage = () => {
       drop,
       nos,
       room: r.room,
-      area: parseFloat(totalArea.toFixed(2)), // total area (m^2)
+      area: parseFloat(area_m2.toFixed(2)), // total area (m^2)
       rate,
       amount: parseFloat(amount.toFixed(2)),
+      // gstRate: rowGstPercent, // expose per-row GST %
       gst,
       total,
     };
@@ -99,10 +114,20 @@ const QuotationPage = () => {
 
   // ------------------ SEARCH + PAGINATION ------------------
   const [filterText, setFilterText] = useState("");
-  const [date, setDate] = useState("2025-10-12");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [description, setDescription] = useState(
     "For 100 MM Vertical BLINDS of MAC PRODUCT. (ROLLER)"
   );
+  // Editable header / contact / sch / to fields
+  const [headerTitle, setHeaderTitle] = useState("SKIPPER CARPET HOUSE");
+  const [supplierLine, setSupplierLine] = useState(
+    "Supplier of: TISCO, TELCO, TIMKEN, TRF, UCIL, HCL & GOVERNMENT CONCERNS"
+  );
+  const [email, setEmail] = useState("skippercarpet@gmail.com");
+
+  const [schNumber, setSchNumber] = useState("SCH/QTN 1859/2025-26");
+  const [toName, setToName] = useState("TCI LTD TRANSPORT");
+  const [toLocation, setToLocation] = useState("JAMSHEDPUR");
   const [newRow, setNewRow] = useState({
     width: 100,
     drop: 115,
@@ -110,6 +135,7 @@ const QuotationPage = () => {
     room: "ROOM",
     shade: "",
     rate: 1500.0,
+    gstRate: null, // default per-row GST uses top-level GST state
   });
 
   // ---- ADD: ARC / MATERIAL / ITEM dropdowns with dynamic add ----
@@ -154,7 +180,7 @@ const QuotationPage = () => {
   // helper to update a field in newRow (string inputs => numbers parsed)
   const updateNewRowField = (field, value) => {
     // parse numeric fields
-    if (["width", "drop", "nos", "rate"].includes(field)) {
+    if (["width", "drop", "nos", "rate", "gstRate"].includes(field)) {
       const num = Number(value || 0);
       setNewRow((prev) => ({ ...prev, [field]: isNaN(num) ? 0 : num }));
     } else {
@@ -163,21 +189,37 @@ const QuotationPage = () => {
   };
 
   // compute derived preview for the newRow (area & amount)
+  // UPDATED: takes measurementUnit into account and returns both display area and area in m2
   const computeRowDerived = (row) => {
     const width = Number(row.width || 0);
     const drop = Number(row.drop || 0);
     const nos = Number(row.nos || 0);
     const rate = Number(row.rate || 0);
 
-    const areaPerItem = (width / 100) * (drop / 100); // m^2 per item
-    const totalArea = areaPerItem * nos;
-    const amount = totalArea * rate;
-
-    return {
-      areaPerItem: parseFloat(areaPerItem.toFixed(4)),
-      totalArea: parseFloat(totalArea.toFixed(2)),
-      amount: parseFloat(amount.toFixed(2)),
-    };
+    if (measurementUnit === "cm") {
+      // inputs are in cm, area in m^2
+      const areaPerItem_m2 = (width / 100) * (drop / 100); // m^2 per item
+      const totalArea_m2 = areaPerItem_m2 * nos;
+      const amount = totalArea_m2 * rate;
+      return {
+        areaPerItem_display: parseFloat(areaPerItem_m2.toFixed(4)),
+        totalArea_display: parseFloat(totalArea_m2.toFixed(2)), // m^2
+        totalArea_m2: parseFloat(totalArea_m2.toFixed(4)),
+        amount: parseFloat(amount.toFixed(2)),
+      };
+    } else {
+      // measurementUnit === 'sqft' - inputs are in feet, area in sqft for display
+      const areaPerItem_sqft = width * drop; // sqft per item
+      const totalArea_sqft = areaPerItem_sqft * nos;
+      const totalArea_m2 = totalArea_sqft * SQFT_TO_M2;
+      const amount = totalArea_m2 * rate;
+      return {
+        areaPerItem_display: parseFloat(areaPerItem_sqft.toFixed(4)),
+        totalArea_display: parseFloat(totalArea_sqft.toFixed(2)), // sqft
+        totalArea_m2: parseFloat(totalArea_m2.toFixed(4)),
+        amount: parseFloat(amount.toFixed(2)),
+      };
+    }
   };
 
   // helper to format yyyy-mm-dd -> dd.mm.yyyy for PDF display
@@ -213,9 +255,6 @@ const QuotationPage = () => {
       const copy = prev.filter((_, i) => i !== index);
       return copy;
     });
-    // if you want the deleted note to immediately reflect in savedNotes when not editing,
-    // uncomment the next line:
-    // setSavedNotes(prev => prev.filter((_, i) => i !== index));
   };
 
   const addNote = () => {
@@ -224,14 +263,12 @@ const QuotationPage = () => {
   };
 
   const saveNotes = () => {
-    // filter out blank trailing lines if you want: keep as-is so user decides
     setSavedNotes([...notes]);
     setIsEditingNotes(false);
   };
 
   const editNotes = () => {
     setIsEditingNotes(true);
-    // keep notes array as-is so user can edit previously saved notes
   };
 
   const filteredData = computedData.filter((item) => {
@@ -241,12 +278,13 @@ const QuotationPage = () => {
 
   const totalItems = filteredData.length;
 
-  // ADD: add new row to tableData
+  // ADD: add new row to tableData - uses computeRowDerived (which handles unit conversion)
   const addRow = () => {
     const derived = computeRowDerived(newRow);
     const nextSN = tableData.length
       ? Math.max(...tableData.map((t) => t.sn || 0)) + 1
       : 1;
+
     const rowToInsert = {
       sn: nextSN,
       width: Number(newRow.width || 0),
@@ -255,9 +293,13 @@ const QuotationPage = () => {
       room: newRow.room || "",
       shade: newRow.shade || "",
       rate: Number(newRow.rate || 0),
-      area: derived.totalArea,
+      // store area as m^2 (this keeps rest of the code compatible)
+      area: derived.totalArea_m2,
       amount: derived.amount,
+      gstRate: newRow.gstRate == null ? null : Number(newRow.gstRate), // <-- store per-row GST
+      unit: measurementUnit, // optional: store which unit this row was added with
     };
+
     setTableData((prev) => [...prev, rowToInsert]);
 
     // optional: reset newRow to sensible defaults (keep this or change to blank)
@@ -275,173 +317,459 @@ const QuotationPage = () => {
   const deleteRow = (sn) => {
     setTableData((prev) => prev.filter((r) => r.sn !== sn));
   };
-
-  // ------------------ EXPORT FUNCTIONS ------------------
-  const exportToExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(computedData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Quotation");
-    XLSX.writeFile(wb, "quotation.xlsx");
+  // update a specific field on an existing row by sn (used for per-row GST edit)
+  const updateRowFieldBySN = (sn, field, value) => {
+    setTableData((prev) =>
+      prev.map((r) => {
+        if (r.sn !== sn) return r;
+        // accept numeric for gstRate
+        if (
+          [
+            "width",
+            "drop",
+            "nos",
+            "rate",
+            "gstRate",
+            "amount",
+            "area",
+          ].includes(field)
+        ) {
+          const num = Number(value || 0);
+          return { ...r, [field]: isNaN(num) ? 0 : num };
+        }
+        return { ...r, [field]: value };
+      })
+    );
   };
 
-  const exportToPDF = () => {
-  const doc = new jsPDF();
+  // ------------------ EXPORT FUNCTIONS ------------------
+  // ------------------ EXPORT TO EXCEL (REPLACEMENT) ------------------
+// ------------------ EXPORT TO EXCEL (ENHANCED: centered headers, left & right blocks) ------------------
+const exportToExcel = () => {
+  // We'll build a 12-column layout (A..L) that mirrors the PDF visually.
+  const COLS = 12; // number of columns we use for layout
 
-  // Header - centered
-  doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
-  doc.text("SKIPPER CARPET HOUSE", 105, 15, { align: "center" });
+  // Helper to push a row with exactly COLS columns (pads with empty strings)
+  const pushRow = (rows, arr) => {
+    const copy = Array.from(arr);
+    while (copy.length < COLS) copy.push("");
+    rows.push(copy);
+  };
 
-  doc.setFontSize(9);
-  doc.setFont("helvetica", "normal");
-  doc.text(
-    "Supplier of: TISCO, TELCO, TIMKEN, TRF, UCIL, HCL & GOVERNMENT CONCERNS",
-    105,
-    21,
-    { align: "center" }
-  );
-  doc.text("E-mail: skippercarpet@gmail.com", 105, 27, { align: "center" });
+  const rows = [];
 
-  // QUOTATION centered
-  doc.setFontSize(12);
-  doc.setFont("helvetica", "bold");
-  doc.text("QUOTATION", 105, 36, { align: "center" });
+  // 0.. -> Build rows in order (we'll merge/center some later)
+  pushRow(rows, [headerTitle]); // 0 - header title (will be merged & centered)
+  pushRow(rows, [supplierLine]); // 1 - supplier (merged)
+  pushRow(rows, [`E-mail: ${email}`]); // 2 - email (merged)
+  pushRow(rows, []); // 3 - empty
+  pushRow(rows, ["QUOTATION"]); // 4 - quotation title (merged)
+  pushRow(rows, []); // 5 - empty
 
-  // SCH/QTN left, DT right
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
-  doc.text("SCH/QTN 1859/2025-26", 15, 45);
-  doc.text("DT: " + formatDateDisplay(date), 15, 51);
+  // SCH / DT row: left block (SCH) in columns A,B ; right block (DT) in columns J,K
+  // We'll place SCH label & value in col A/B and DT label/value in J/K
+  // SCH row (left side)
+const schRow = [];
+schRow[0] = schNumber;
+pushRow(rows, schRow); // schRow index (previously 6)
 
-  // TO block
-  doc.setFont("helvetica", "bold");
-  doc.text("TO:", 15, 57);
-  doc.setFont("helvetica", "normal");
-  doc.text("TCI LTD TRANSPORT", 15, 63);
-  doc.text("JAMSHEDPUR", 15, 69);
+// DT row (placed BELOW the SCH row, on the left side)
+const dtRow = Array(COLS).fill("");
+dtRow[0] = "DT";
+dtRow[1] = formatDateDisplay(date);
+pushRow(rows, dtRow); // new DT row (will be schRowIndex + 1)
 
-  // Description label and text
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "bold");
-  doc.text("Description: ", 15, 77);
-  doc.setFont("helvetica", "normal");
-  // use splitTextToSize in case description is long
-  const descLines = doc.splitTextToSize(description, 180);
-  doc.text(descLines, 36, 77);
+// TO rows - left column (A/B) (moved down because of inserted DT)
+const toRow = [];
+toRow[0] = "TO";
+toRow[1] = toName;
+pushRow(rows, toRow); // toRow
 
-  // ARC / MATERIAL / ITEM line (below description)
-  doc.setFontSize(10);
-  doc.text(`ARC NO: ${arcNo}`, 15, 86);
-  doc.text(`MATERIAL NO: ${materialNo}`, 90, 86);
-  doc.text(`ITEM NO: ${itemNo}`, 160, 86);
+const toLocRow = [];
+toLocRow[1] = toLocation;
+pushRow(rows, toLocRow); // toLocRow
 
-  // Table head + body
-  const head = [
-    ["SN", "WIDTH", "DROP", "NOS", "ROOM", "AREA", "SHADE", "RATE", "AMOUNT", `G.S.T. ${gstRate}% AMT`, "TOTAL"],
+
+  pushRow(rows, []); // 9
+
+  // Description (left)
+  pushRow(rows, ["Description", description]); // 10
+  pushRow(rows, []); // 11
+
+  // ARC / MATERIAL / ITEM row (spread across left-to-right)
+  const arcRow = [];
+  arcRow[0] = "ARC NO:";
+  arcRow[1] = arcNo;
+  arcRow[3] = "MATERIAL NO:";
+  arcRow[4] = materialNo;
+  arcRow[6] = "ITEM NO:";
+  arcRow[7] = itemNo;
+  pushRow(rows, arcRow); // 12
+
+  pushRow(rows, []); // 13 - space before table
+
+  // Table header (14)
+  const widthLabelXlsx = measurementUnit === "cm" ? "WIDTH (cm)" : "WIDTH (ft)";
+  const dropLabelXlsx = measurementUnit === "cm" ? "DROP (cm)" : "DROP (ft)";
+  const tableHeader = [
+    "SN",
+    widthLabelXlsx,
+    dropLabelXlsx,
+    "NOS",
+    "ROOM",
+    "AREA (m2)",
+    "SHADE",
+    "RATE",
+    "GST (%)",
+    "G.S.T. AMT",
+    "AMOUNT",
+    "TOTAL",
   ];
+  pushRow(rows, tableHeader); // 14
 
-  const body = computedData.map((r) => [
-    r.sn,
-    r.width,
-    r.drop,
-    r.nos,
-    r.room,
-    r.area.toFixed(2),
-    r.shade,
-    r.rate.toFixed(2),
-    r.amount.toFixed(2),
-    r.gst.toFixed(2),
-    r.total.toFixed(2),
-  ]);
-
-  // add grand total as last row in body (already present in your code earlier)
-  // body.push([
-  //   "GRAND TOTAL",
-  //   "",
-  //   "",
-  //   totals.nos,
-  //   "",
-  //   totals.area.toFixed(2),
-  //   "",
-  //   "",
-  //   totals.amount.toFixed(2),
-  //   totals.gst.toFixed(2),
-  //   totals.total.toFixed(2),
-  // ]);
-
-  // Draw table with numeric columns right-aligned and bold last row
-  autoTable(doc, {
-    startY: 92,
-    head: head,
-    body: body,
-    theme: "grid",
-    styles: { fontSize: 9, cellPadding: 3 },
-    headStyles: { textColor: [0, 0, 0], fillColor: [255, 255, 255] },
-    columnStyles: {
-      3: { halign: "center" }, // NOS center
-      5: { halign: "right" },  // AREA
-      7: { halign: "right" },  // RATE
-      8: { halign: "right" },  // AMOUNT
-      9: { halign: "right" },  // GST
-      10:{ halign: "right" },  // TOTAL
-    },
-    didParseCell: function (data) {
-      if (data.section === "body" && data.row.index === body.length - 1) {
-        data.cell.styles.fontStyle = "";
-      }
-    },
+  // Table body - start at row index 15
+  computedData.forEach((r) => {
+    pushRow(rows, [
+      r.sn,
+      r.width,
+      r.drop,
+      r.nos,
+      r.room,
+      Number(r.area.toFixed(2)),
+      r.shade,
+      Number(r.rate.toFixed(2)),
+      Number((r.gstRate == null ? gstRate : r.gstRate).toFixed(2)),
+      Number(r.gst.toFixed(2)),
+      Number(r.amount.toFixed(2)),
+      Number(r.total.toFixed(2)),
+    ]);
   });
 
-  // After table: put small summary on left and financial totals on right, then notes
-  let finalY = doc.lastAutoTable.finalY + 8;
+ // ---------- REPLACEMENT: Put Amount/GST/Total aligned to the RIGHT but on same lines as NOS/AREA ----------
+pushRow(rows, []); // blank after table
 
-  // LEFT - NOS & AREA
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text(`NOS: ${totals.nos}`, 14, finalY + 10);
-  doc.text(`AREA: ${totals.area.toFixed(2)}`, 14, finalY + 18);
+// NOS row with Amount on the right (col index 9 label, 10 value)
+const nosRow = Array(COLS).fill("");
+nosRow[0] = "NOS";
+nosRow[1] = totals.nos;
+nosRow[9] = "Amount";
+nosRow[10] = Number(totals.amount.toFixed(2));
+rows.push(nosRow);
 
-  // RIGHT - Amount / GST / Total (right aligned)
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const rightX = pageWidth - 14;
-  doc.setFont("helvetica", "bold");
-  doc.text(`Amount: ${totals.amount.toFixed(2)}`, rightX, finalY + 10, { align: "right" });
-  doc.text(`GST Amt: ${totals.gst.toFixed(2)}`, rightX, finalY + 18, { align: "right" });
-  doc.text(`Total Amt: ${totals.total.toFixed(2)}`, rightX, finalY + 26, { align: "right" });
+// AREA row with GST Amt on the right
+const areaRow = Array(COLS).fill("");
+areaRow[0] = "AREA (m2)";
+areaRow[1] = Number(totals.area.toFixed(2));
+areaRow[9] = "GST Amt";
+areaRow[10] = Number(totals.gst.toFixed(2));
+rows.push(areaRow);
 
-  // NOTES below
-  const notesStartY = finalY + 40;
-  doc.setFont("helvetica", "bold");
-  doc.text("NOTE:", 14, notesStartY);
-  doc.setFont("helvetica", "normal");
+// blank row then Total Amt (right)
+pushRow(rows, []);
+const totalRow = Array(COLS).fill("");
+totalRow[9] = "Total Amt";
+totalRow[10] = Number(totals.total.toFixed(2));
+rows.push(totalRow);
+
+
+  pushRow(rows, []); // space before notes
+
+  // NOTES
   const notesToWrite = savedNotes && savedNotes.length ? savedNotes : notes;
-  let offset = 6;
-  notesToWrite.forEach((noteText, idx) => {
-    const lineY = notesStartY + offset + idx * 6;
-    const prefix = String(idx + 1).padStart(2, "0") + ". ";
-    doc.text(prefix + noteText, 20, lineY);
-  });
+  if (notesToWrite && notesToWrite.length) {
+    pushRow(rows, ["NOTE:"]);
+    notesToWrite.forEach((n, idx) => {
+      pushRow(rows, [`${String(idx + 1).padStart(2, "0")}. ${n}`]);
+    });
+  }
 
-  // Final footer total (if needed)
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  // you can place this above or below notes; adjust Y if needed
-  doc.text(`Total Amt With Fixing ${grandTotal}/-`, 14, notesStartY + 6 + notesToWrite.length * 6 + 14);
+  // Build worksheet
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+// Helper to set basic style (center + bold optionally)
+const setCellStyles = (r, c, style) => {
+  const ref = XLSX.utils.encode_cell({ r, c });
+  if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+  ws[ref].s = Object.assign({}, ws[ref].s || {}, style);
+};
 
-  doc.save("quotation.pdf");
+// Center and bold the main header lines (apply style to the top-left cell of each merged region)
+setCellStyles(0, 0, {
+  alignment: { horizontal: "center", vertical: "center" },
+  font: { bold: true, sz: 14 },
+});
+setCellStyles(1, 0, {
+  alignment: { horizontal: "center", vertical: "center" }
+});
+setCellStyles(2, 0, {
+  alignment: { horizontal: "center", vertical: "center" }
+});
+setCellStyles(4, 0, {
+  alignment: { horizontal: "center", vertical: "center" },
+  font: { bold: true },
+});
+
+  // Optional: set column widths (adjust as needed)
+ ws["!cols"] = [
+  { wch: 15 }, // 0 → big label column (A)
+  { wch: 14 }, // 1 → value column (B)
+  { wch: 10  }, // 2 → small spacer
+  { wch: 20 }, // 3 → MATERIAL label (D)
+  { wch: 12 }, // 4 → MATERIAL value
+  { wch: 10  }, // 5 → spacer
+  { wch: 20 }, // 6 → ITEM label
+  { wch: 12 }, // 7 → ITEM value
+  { wch: 10 }, // 8 → small shading / misc col
+  { wch: 12 }, // 9 → right-side label (Amount / GST / Total label)
+  { wch: 16 }, // 10 → right-side values (Amount / GST / Total value)
+  { wch: 10 }, // 11 → small total column (reduces the visual gap)
+];
+
+  // ------------------ merges & styles ------------------
+  // Merge header / supplier / email / QUOTATION across A..L (0..11)
+  // We'll merge the first three rows and the QUOTATION row to center them.
+  ws["!merges"] = ws["!merges"] || [];
+  const pushMerge = (sr, sc, er, ec) => ws["!merges"].push({ s: { r: sr, c: sc }, e: { r: er, c: ec } });
+  // header rows: row indexes (0-based)
+  pushMerge(0, 0, 0, COLS - 1); // headerTitle row 0
+  pushMerge(1, 0, 1, COLS - 1); // supplierLine row 1
+  pushMerge(2, 0, 2, COLS - 1); // email row 2
+  pushMerge(4, 0, 4, COLS - 1); // QUOTATION row 4
+
+  // Optionally merge description across many columns
+  // pushMerge(10, 1, 10, COLS - 1); // description value (row 10, col B..L)
+  pushMerge(11, 1, 11, COLS - 1); // description value (row 11, col B..L)
+  // ---------- MERGE NOTES ROWS TO FULL WIDTH (A..L) ----------
+if (notesToWrite && notesToWrite.length) {
+  // compute where notes start in the rows array
+  // find the first row index where a note was added by searching for the "NOTE:" cell text
+  let notesStart = -1;
+  for (let r = 0; r < rows.length; r++) {
+    const cellVal = rows[r][0];
+    if (cellVal === "NOTE:") {
+      notesStart = r;
+      break;
+    }
+  }
+  if (notesStart !== -1) {
+    // merge each note row across all columns 0..(COLS-1)
+    for (let i = 0; i < (notesToWrite.length + 1); i++) {
+      // +1 because the first "NOTE:" row is included, and follow-up lines are separate
+      const rr = notesStart + i;
+      pushMerge(rr, 0, rr, COLS - 1);
+    }
+  }
+}
+
+
+  // Center the merged header cells and QUOTATION
+  const setCellStyle = (r, c, style) => {
+    const ref = XLSX.utils.encode_cell({ r, c });
+    if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+    ws[ref].s = Object.assign({}, ws[ref].s || {}, style);
+  };
+
+  // center header rows (A1, A2, A3, A5 indexes)
+  setCellStyle(0, 0, { alignment: { horizontal: "center", vertical: "center" }, font: { bold: true, sz: 14 } });
+  setCellStyle(1, 0, { alignment: { horizontal: "center" , vertical: "center"} });
+  setCellStyle(2, 0, { alignment: { horizontal: "center" , vertical: "center"} });
+  setCellStyle(4, 0, { alignment: { horizontal: "center", vertical: "center" }, font: { bold: true ,sz: 14} });
+
+  // Make table header bold and centered (row index 14)
+  const headerRowIndex = 15;
+  for (let c = 0; c < COLS; c++) {
+    const ref = XLSX.utils.encode_cell({ r: headerRowIndex, c });
+    if (ws[ref]) {
+      ws[ref].s = Object.assign({}, ws[ref].s || {}, { font: { bold: true }, alignment: { horizontal: "center" } });
+    }
+  }
+
+  // Right-align the DT cell(s) (we placed DT label at col 9, value at col10) and right totals
+  // setCellStyle(6, 9, { alignment: { horizontal: "right" }, font: { bold: true } }); // "DT" label
+  // setCellStyle(6, 10, { alignment: { horizontal: "right" } }); // date value
+
+  // style DT row (left side)
+  const dtIndex = 7;
+setCellStyle(dtIndex, 0, { alignment: { horizontal: "left", vertical: "center" }, font: { bold: true } });
+setCellStyle(dtIndex, 1, { alignment: { horizontal: "left", vertical: "center" }, font: { bold: true } });
+
+  // Right totals already placed at columns J(9) and K(10) - set right alignment and bold label
+  // find the first totals row index: locate the first row with label in col 9
+  for (let r = 0; r < rows.length; r++) {
+    const labelRef = XLSX.utils.encode_cell({ r, c: 9 });
+    if (ws[labelRef] && ws[labelRef].v && typeof ws[labelRef].v === "string") {
+      // assume these are right-totals we added; style them
+      setCellStyle(r, 9, { alignment: { horizontal: "right" }, font: { bold: true } });
+      setCellStyle(r, 10, { alignment: { horizontal: "right" } });
+    }
+  }
+
+  // Build workbook and save
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Quotation");
+  XLSX.writeFile(wb, "quotation.xlsx");
 };
 
 
 
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+
+    // Header - centered
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text(headerTitle, 105, 15, { align: "center" });
+
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    // split supplier line to avoid overflow
+    const supplierLines = doc.splitTextToSize(supplierLine, 180);
+    doc.text(supplierLines, 105, 21, { align: "center" });
+    // email
+    doc.text(`E-mail: ${email}`, 105, 27 + (supplierLines.length - 1) * 4, {
+      align: "center",
+    });
+
+    // QUOTATION centered
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("QUOTATION", 105, 36, { align: "center" });
+
+    // SCH/QTN left, DT right
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(schNumber, 15, 45);
+    doc.text("DT: " + formatDateDisplay(date), 15, 51);
+
+    // TO block (editable)
+    doc.setFont("helvetica", "bold");
+    doc.text("TO:", 15, 57);
+    doc.setFont("helvetica", "normal");
+    doc.text(toName, 15, 63);
+    doc.text(toLocation, 15, 69);
+
+    // Description label and text
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "bold");
+    doc.text("Description: ", 15, 77);
+    doc.setFont("helvetica", "normal");
+    const descLines = doc.splitTextToSize(description, 180);
+    doc.text(descLines, 36, 77);
+
+    // ARC / MATERIAL / ITEM line (below description)
+    doc.setFontSize(10);
+    doc.text(`ARC NO: ${arcNo}`, 15, 86);
+    doc.text(`MATERIAL NO: ${materialNo}`, 90, 86);
+    doc.text(`ITEM NO: ${itemNo}`, 160, 86);
+
+    // Table head + body
+    const head = [
+      [
+        "SN",
+        measurementUnit === "cm" ? "WIDTH (cm)" : "WIDTH (ft)",
+        measurementUnit === "cm" ? "DROP (cm)" : "DROP (ft)",
+        "NOS",
+        "ROOM",
+        "AREA (m2)",
+        "SHADE",
+        "RATE",
+        "GST (%)",
+        "G.S.T. AMT",
+        "AMOUNT",
+        "TOTAL",
+      ],
+    ];
+
+    const body = computedData.map((r) => [
+      r.sn,
+      r.width,
+      r.drop,
+      r.nos,
+      r.room,
+      r.area.toFixed(2),
+      r.shade,
+      r.rate.toFixed(2),
+      (r.gstRate || gstRate).toFixed(2), // show GST % (two decimals)
+      r.gst.toFixed(2), // GST amount
+      r.amount.toFixed(2),
+      r.total.toFixed(2),
+    ]);
+
+    autoTable(doc, {
+      startY: 92,
+      head: head,
+      body: body,
+      theme: "grid",
+      styles: { fontSize: 7, cellPadding: 3 },
+      headStyles: { textColor: [0, 0, 0], fillColor: [255, 255, 255] },
+      columnStyles: {
+        3: { halign: "center" }, // NOS center
+        5: { halign: "right" }, // AREA
+        7: { halign: "right" }, // RATE
+        8: { halign: "right" }, // GST (%)  (if you want)
+        9: { halign: "right" }, // GST AMT
+        10: { halign: "right" }, // AMOUNT
+        11: { halign: "right" }, // TOTAL
+      },
+    });
+
+    let finalY = doc.lastAutoTable.finalY + 8;
+
+    // LEFT - NOS & AREA
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text(`NOS: ${totals.nos}`, 14, finalY + 10);
+    doc.text(`AREA: ${totals.area.toFixed(2)}`, 14, finalY + 18);
+
+    // RIGHT - Amount / GST / Total (right aligned)
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const rightX = pageWidth - 14;
+    doc.setFont("helvetica", "bold");
+    doc.text(`Amount: ${totals.amount.toFixed(2)}`, rightX, finalY + 10, {
+      align: "right",
+    });
+    doc.text(`GST Amt: ${totals.gst.toFixed(2)}`, rightX, finalY + 18, {
+      align: "right",
+    });
+    doc.text(`Total Amt: ${totals.total.toFixed(2)}`, rightX, finalY + 26, {
+      align: "right",
+    });
+
+    // NOTES below
+    const notesStartY = finalY + 40;
+    doc.setFont("helvetica", "bold");
+    doc.text("NOTE:", 14, notesStartY);
+    doc.setFont("helvetica", "normal");
+    const notesToWrite = savedNotes && savedNotes.length ? savedNotes : notes;
+    notesToWrite.forEach((noteText, idx) => {
+      const lineY = notesStartY + 6 + idx * 6;
+      const prefix = String(idx + 1).padStart(2, "0") + ". ";
+      doc.text(prefix + noteText, 20, lineY);
+    });
+
+    // Final footer total (if needed)
+    // doc.setFont("helvetica", "bold");
+    // doc.setFontSize(11);
+    // doc.text(
+    //   `Total Amt With Fixing ${grandTotal}/-`,
+    //   14,
+    //   notesStartY + 6 + notesToWrite.length * 6 + 14
+    // );
+
+    doc.save("quotation.pdf");
+  };
+
   // ------------------ TABLE COLUMNS ------------------
+  const widthLabel = measurementUnit === "cm" ? "WIDTH (cm)" : "WIDTH (ft)";
+  const dropLabel = measurementUnit === "cm" ? "DROP (cm)" : "DROP (ft)";
+
   const columns = [
     { name: "SN", selector: (row) => row.sn, sortable: true, width: "70px" },
-    { name: "WIDTH", selector: (row) => row.width },
-    { name: "DROP", selector: (row) => row.drop },
+    { name: widthLabel, selector: (row) => row.width },
+    { name: dropLabel, selector: (row) => row.drop },
     { name: "NOS", selector: (row) => row.nos },
     { name: "ROOM", selector: (row) => row.room },
     {
-      name: "AREA",
+      name: "AREA (m²)",
       selector: (row) => row.area,
       format: (row) => row.area.toFixed(2),
     },
@@ -451,21 +779,56 @@ const QuotationPage = () => {
       selector: (row) => row.rate,
       format: (row) => row.rate.toFixed(2),
     },
+
+    // NEW: GST % editable column
+    {
+  name: "GST (%)",
+  cell: (row) => (
+    <select
+      className="form-select form-select-sm"
+      // show the row's explicit gstRate when set; otherwise show global gstRate
+      value={String(row.gstRate ?? gstRate)}
+      onChange={(e) =>
+        // save numeric value into tableData (updateRowFieldBySN already parses numbers)
+        updateRowFieldBySN(row.sn, "gstRate", Number(e.target.value))
+      }
+      style={{ width: 90 }}
+    >
+      <option value="0">0%</option>
+      <option value="2">2%</option>
+      <option value="5">5%</option>
+      <option value="10">10%</option>
+      <option value="12">12%</option>
+      <option value="15">15%</option>
+      <option value="18">18%</option>
+      <option value="20">20%</option>
+      <option value="28">28%</option>
+    </select>
+  ),
+  ignoreRowClick: true,
+  allowOverflow: true,
+  width: "110px",
+},
+
+    // GST Amount (calculated)
+    {
+      name: "G.S.T. AMT",
+      selector: (row) => row.gst,
+      format: (row) => row.gst.toFixed(2),
+    },
+
     {
       name: "AMOUNT",
       selector: (row) => row.amount,
       format: (row) => row.amount.toFixed(2),
     },
-    {
-      name: `G.S.T. ${gstRate}% AMT`,
-      selector: (row) => row.gst,
-      format: (row) => row.gst.toFixed(2),
-    },
+
     {
       name: "TOTAL",
       selector: (row) => row.total,
       format: (row) => row.total.toFixed(2),
     },
+
     {
       name: "ACTION",
       cell: (row) => (
@@ -488,26 +851,97 @@ const QuotationPage = () => {
     <div className="quotation-page container mt-4 mb-5 p-4 border rounded bg-white">
       {/* Header */}
       <div className="text-center mb-2">
-        <h4 className="fw-bold text-uppercase">SKIPPER CARPET HOUSE</h4>
-        <p className="small">
-          Supplier of: TISCO, TELCO, TIMKEN, TRF, UCIL, HCL & GOVERNMENT
-          CONCERNS
-        </p>
-        <p className="small fw-semibold">
-          E-mail: <span className="text-primary">skippercarpet@gmail.com</span>
-        </p>
-      </div>
+        {/* Title (editable) - use textarea so long titles wrap to next line */}
+        <div>
+          <textarea
+            rows={1}
+            className="text-center fw-bold text-uppercase"
+            value={headerTitle}
+            onChange={(e) => setHeaderTitle(e.target.value)}
+            style={{
+              fontSize: "1.25rem",
+              border: "none",
+              background: "transparent",
+              outline: "none",
+              display: "block",
+              margin: "0 auto",
+              width: "90%",
+              maxWidth: "900px",
+              padding: 0,
+              resize: "vertical",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              lineHeight: 1.05,
+            }}
+          />
+        </div>
 
-      <h5 className="text-center mb-3 text-decoration-underline fw-bold">
+        {/* Supplier line (editable) - textarea so it wraps into next line(s) */}
+        <div>
+          <textarea
+            rows={2}
+            className="text-center mt-3"
+            value={supplierLine}
+            onChange={(e) => setSupplierLine(e.target.value)}
+            style={{
+              border: "none",
+              background: "transparent",
+              outline: "none",
+              display: "block",
+              margin: "0 auto",
+              width: "90%",
+              maxWidth: "900px",
+              padding: 0,
+              resize: "vertical",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              lineHeight: 1.05,
+            }}
+          />
+        </div>
+
+        {/* Email (editable) - keep input but center the control block */}
+        <div className="small fw-semibold">
+          E-mail:{" "}
+          <input
+            type="email"
+            className="d-inline-block"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{
+              display: "inline-block",
+              border: "none",
+              background: "transparent",
+              padding: 0,
+              width: "auto",
+            }}
+          />
+        </div>
+      </div>
+      <h5 className="text-center mb-3 text-decoration-underline fw-bold mt-2">
         QUOTATION
       </h5>
 
       {/* SCH/QTN with DT in-place, and TO stacked under SCH */}
       <div className="mb-2">
-        <p className="mb-1">SCH/QTN 1859/2025-26</p>
+        <input
+          type="text"
+          className="form-control form-control-sm"
+          style={{
+            width: "220px",
+            border: "none",
+            background: "transparent",
+            resize: "none",
+            paddingLeft: "0px",
+          }}
+          value={schNumber}
+          onChange={(e) => setSchNumber(e.target.value)}
+        />
 
         {/* DT stays at its original place (immediately under SCH). It's now a date picker. */}
-        <div className="mb-2 d-flex align-items-center gap-2">
+        <div className="mb-2 d-flex align-items-center gap-2 mt-1">
           <label htmlFor="dtInput" className="mb-0">
             DT:
           </label>
@@ -523,9 +957,33 @@ const QuotationPage = () => {
 
         {/* TO block is placed below SCH (stacked) */}
         <div className="mt-2">
-          <p className="mb-1 fw-bold">TO:</p>
-          <p className="mb-1">TCI LTD TRANSPORT</p>
-          <p className="mb-1">JAMSHEDPUR</p>
+          <label className="mb-0 fw-bold">TO:</label>
+          <div className="mt-1">
+            <input
+              type="text"
+              className="form-control form-control-sm mb-1"
+              value={toName}
+              onChange={(e) => setToName(e.target.value)}
+              style={{
+                border: "none",
+                background: "transparent",
+                resize: "none",
+                paddingLeft: "0px",
+              }}
+            />
+            <input
+              type="text"
+              className="form-control form-control-sm"
+              value={toLocation}
+              onChange={(e) => setToLocation(e.target.value)}
+              style={{
+                border: "none",
+                background: "transparent",
+                resize: "none",
+                paddingLeft: "0px",
+              }}
+            />
+          </div>
         </div>
       </div>
 
@@ -537,6 +995,12 @@ const QuotationPage = () => {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Enter product description e.g. 200 MM, Side SYSTEM, DIY ITEM. (PENCIL)"
+          style={{
+            border: "none",
+            background: "transparent",
+            resize: "none",
+            paddingLeft: "0px",
+          }}
         />
       </div>
 
@@ -579,7 +1043,7 @@ const QuotationPage = () => {
             value={gstRate}
             onChange={(e) => setGstRate(Number(e.target.value))}
             style={{ width: "110px" }}
-          >
+          > <option value={0}>0%</option>
             <option value={2}>2%</option>
             <option value={5}>5%</option>
             <option value={10}>10%</option>
@@ -587,6 +1051,7 @@ const QuotationPage = () => {
             <option value={15}>15%</option>
             <option value={18}>18%</option>
             <option value={20}>20%</option>
+            <option value={28}>28%</option>
           </select>
         </div>
       </div>
@@ -594,8 +1059,23 @@ const QuotationPage = () => {
       {/* ADD: New Row entry form (live-calculative preview) */}
       <div className="card card-body mb-3">
         <div className="row g-2 align-items-end">
+          {/* Measurement unit selector */}
           <div className="col-auto">
-            <label className="form-label mb-1">Width (cm)</label>
+            <label className="form-label mb-1">Unit</label>
+            <select
+              className="form-select form-select-sm"
+              value={measurementUnit}
+              onChange={(e) => setMeasurementUnit(e.target.value)}
+            >
+              <option value="cm">cm / m² (enter dimensions in cm)</option>
+              <option value="sqft">ft / sqft (enter dimensions in ft)</option>
+            </select>
+          </div>
+
+          <div className="col-auto">
+            <label className="form-label mb-1">
+              {measurementUnit === "cm" ? "Width (cm)" : "Width (ft)"}
+            </label>
             <input
               type="number"
               className="form-control form-control-sm"
@@ -604,7 +1084,9 @@ const QuotationPage = () => {
             />
           </div>
           <div className="col-auto">
-            <label className="form-label mb-1">Drop (cm)</label>
+            <label className="form-label mb-1">
+              {measurementUnit === "cm" ? "Drop (cm)" : "Drop (ft)"}
+            </label>
             <input
               type="number"
               className="form-control form-control-sm"
@@ -648,16 +1130,43 @@ const QuotationPage = () => {
               onChange={(e) => updateNewRowField("rate", e.target.value)}
             />
           </div>
+          <div className="col-auto">
+            <label className="form-label mb-1">GST (%)</label>
+            <select
+  className="form-select form-select-sm"
+  value={String(newRow.gstRate ?? gstRate)}
+  onChange={(e) => updateNewRowField("gstRate", e.target.value)}
+  style={{ width: 90 }}
+>
+  <option value="0">0%</option>
+  <option value="2">2%</option>
+  <option value="5">5%</option>
+  <option value="10">10%</option>
+  <option value="12">12%</option>
+  <option value="15">15%</option>
+  <option value="18">18%</option>
+  <option value="20">20%</option>
+  <option value="28">28%</option>
+</select>
+          </div>
 
           {/* Derived preview */}
           <div className="col-auto">
-            <label className="form-label mb-1">Area (m²)</label>
+            <label className="form-label mb-1">
+              {measurementUnit === "cm" ? "Area (m²)" : "Area (sqft)"}
+            </label>
             <input
               type="text"
               readOnly
               className="form-control form-control-sm"
-              value={computeRowDerived(newRow).totalArea.toFixed(2)}
+              value={computeRowDerived(newRow).totalArea_display.toFixed(2)}
             />
+            {/* show equivalent in m² when sqft is selected */}
+            {measurementUnit === "sqft" && (
+              <div className="small text-muted">
+                (~{computeRowDerived(newRow).totalArea_m2.toFixed(3)} m²)
+              </div>
+            )}
           </div>
           <div className="col-auto">
             <label className="form-label mb-1">Amount</label>
@@ -898,9 +1407,9 @@ const QuotationPage = () => {
       </div>
 
       {/* Total Fixing */}
-      <div className="bg-warning text-dark p-2 mt-3 fw-bold fs-6 text-center rounded">
+      {/* <div className="bg-warning text-dark p-2 mt-3 fw-bold fs-6 text-center rounded">
         Total Amt With Fixing ₹{grandTotal}/-
-      </div>
+      </div> */}
 
       {/* Export */}
       <div className="d-flex gap-3 justify-content-end mt-4">
