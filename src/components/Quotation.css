@@ -1,0 +1,38 @@
+:root {
+  --bg: #e9f0ec;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --accent: #0d6efd;
+}
+
+.quotation-container {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+  background: linear-gradient(180deg, var(--bg) 0%, #dde7df 100%);
+  color: #222;
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(17, 24, 39, 0.06);
+}
+
+.hello {
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 15px;
+}
+
+.form-label {
+  font-size: 1.1rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.table-fixed {
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  padding: 0.5rem;
+}
+
+.data-table-extensions {
+  display: none;
+}

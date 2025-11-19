@@ -1,0 +1,17 @@
+.quotation-page {
+  font-family: "Segoe UI", Arial, sans-serif;
+  background-color: #fafafa;
+}
+
+.quotation-table th,
+.quotation-table td {
+  vertical-align: middle !important;
+}
+
+.table-warning th {
+  background-color: #fff8a6 !important;
+  color: #000;
+}
+.form-control{
+    max-width: 50%;
+}
