@@ -1444,13 +1444,13 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
       </div>
       <div className="d-flex gap-3 justify-content-end mt-4">
         <DropdownButton id="export" title="Export" variant="outline-primary">
-          <Dropdown.Item
+          {/* <Dropdown.Item
             as={CSVLink}
             data={computedData}
             filename="quotation.csv"
           >
             Download CSV
-          </Dropdown.Item>
+          </Dropdown.Item> */}
           <Dropdown.Item onClick={exportToExcel}>Download Excel</Dropdown.Item>
           <Dropdown.Item onClick={exportToPDF}>Download PDF</Dropdown.Item>
         </DropdownButton>
