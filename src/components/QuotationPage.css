@@ -1,6 +1,8 @@
 .quotation-page {
   font-family: "Segoe UI", Arial, sans-serif;
   background-color: #fafafa;
+  width: 90%;
+  margin: 0 auto;
 }
 
 .quotation-table th,

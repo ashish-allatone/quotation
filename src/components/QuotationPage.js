@@ -1,18 +1,13 @@
 import React, { useState } from "react";
-import { Button, DropdownButton, Dropdown } from "react-bootstrap";
+import {DropdownButton, Dropdown } from "react-bootstrap";
 import DataTable from "react-data-table-component";
-import { CSVLink } from "react-csv";
-import * as XLSX from "xlsx-js-style";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import "./QuotationPage.css";
 import AppLogo from '../App Logo.png';
 import ExcelJS from "exceljs/dist/exceljs.min.js"; // use ExcelJS browser build
 import { saveAs } from "file-saver";
-
-
 const SQFT_TO_M2 = 0.092903; // conversion constant
-
 const QuotationPage = () => {
   // ------------------ STATIC TABLE DATA ------------------
   const initialTableData = [
@@ -55,66 +50,76 @@ const QuotationPage = () => {
   ];
 
   const [tableData, setTableData] = useState(initialTableData);
-
-  // const grandTotal = 17370; // with fixing charge
   const [gstRate, setGstRate] = useState(12); // default GST 12%
-
-  // ---------- NEW: measurement unit (cm or sqft) ----------
   const [measurementUnit, setMeasurementUnit] = useState("cm");
-
-  // REPLACE computedData mapping with this derived calculation
   const computedData = tableData.map((r, idx) => {
-    const width = Number(r.width || 0);
-    const drop = Number(r.drop || 0);
-    const nos = Number(r.nos || 0);
-    const rate = Number(r.rate || 0);
+  const width = Number(r.width || 0);
+  const drop = Number(r.drop || 0);
+  const nos = Number(r.nos || 0);
+  const rate = Number(r.rate || 0);
+  const area_m2 = Number(r.area || 0);
+  const amount = Number(r.amount || 0);
 
-    // In table we keep AREA as m^2 (same as before)
-    const area_m2 = Number(r.area || 0);
-    const amount = Number(r.amount || 0);
+  // per-row GST percentage (fallback to top-level gstRate)
+  const rowGstPercent = Number(r.gstRate == null ? gstRate : r.gstRate);
 
-    // Use per-row GST if present; otherwise fall back to global gstRate state
-    const rowGstPercent = Number(
-      // r.gstRate may be 0, so explicit nullish fallback is safer:
-      r.gstRate == null ? gstRate : r.gstRate
-    );
-
-    const gst = parseFloat((amount * (rowGstPercent / 100)).toFixed(2));
-    const total = parseFloat((amount + gst).toFixed(2));
-
-    return {
-      ...r,
-      sn: r.sn ?? idx + 1,
-      width,
-      drop,
-      nos,
-      room: r.room,
-      area: parseFloat(area_m2.toFixed(2)), // total area (m^2)
-      rate,
-      amount: parseFloat(amount.toFixed(2)),
-      // gstRate: rowGstPercent, // expose per-row GST %
-      gst,
-      total,
-    };
-  });
-
-  // ------------------ COMPUTE GRAND TOTALS ------------------
-  const totals = computedData.reduce(
-    (acc, row) => {
-      acc.nos += Number(row.nos || 0);
-      acc.area += Number(row.area || 0);
-      acc.amount += Number(row.amount || 0);
-      acc.gst += Number(row.gst || 0);
-      acc.total += Number(row.total || 0);
-      return acc;
-    },
-    { nos: 0, area: 0, amount: 0, gst: 0, total: 0 }
+  // per-row discount percentage (fallback to 0 if not set)
+  const rowDiscountPercent = Number(
+    r.discountRate == null ? 0 : r.discountRate
   );
 
-  totals.area = parseFloat(totals.area.toFixed(2));
-  totals.amount = parseFloat(totals.amount.toFixed(2));
-  totals.gst = parseFloat(totals.gst.toFixed(2));
-  totals.total = parseFloat(totals.total.toFixed(2));
+  // Compute discount amount and net amount (discount applied to 'amount')
+  const discountAmount = parseFloat(
+    (amount * (rowDiscountPercent / 100)).toFixed(2)
+  );
+  const netAmount = parseFloat((amount - discountAmount).toFixed(2));
+
+  // GST is applied on netAmount (assumption). If you want GST on original amount instead, adjust here.
+  const gst = parseFloat((netAmount * (rowGstPercent / 100)).toFixed(2));
+
+  // final total = net amount + gst
+  const total = parseFloat((netAmount + gst).toFixed(2));
+
+  return {
+    ...r,
+    sn: r.sn ?? idx + 1,
+    width,
+    drop,
+    nos,
+    room: r.room,
+    area: parseFloat(area_m2.toFixed(2)),
+    rate,
+    amount: parseFloat(amount.toFixed(2)),
+    gstRate: r.gstRate == null ? null : Number(r.gstRate),
+    discountRate: r.discountRate == null ? 0 : Number(r.discountRate),
+    discountAmount,
+    netAmount,
+    gst,
+    total,
+  };
+});
+
+  const totals = computedData.reduce(
+  (acc, row) => {
+    acc.nos += Number(row.nos || 0);
+    acc.area += Number(row.area || 0);
+    acc.amount += Number(row.amount || 0); // gross amount before discount
+    acc.discount += Number(row.discountAmount || 0); // total discount amount
+    acc.net += Number(row.netAmount || 0); // amount after discount, before gst
+    acc.gst += Number(row.gst || 0);
+    acc.total += Number(row.total || 0); // net + gst
+    return acc;
+  },
+  { nos: 0, area: 0, amount: 0, discount: 0, net: 0, gst: 0, total: 0 }
+);
+
+totals.area = parseFloat(totals.area.toFixed(2));
+totals.amount = parseFloat(totals.amount.toFixed(2));
+totals.discount = parseFloat(totals.discount.toFixed(2));
+totals.net = parseFloat(totals.net.toFixed(2));
+totals.gst = parseFloat(totals.gst.toFixed(2));
+totals.total = parseFloat(totals.total.toFixed(2));
+
 
   // ------------------ SEARCH + PAGINATION ------------------
   const [filterText, setFilterText] = useState("");
@@ -142,9 +147,10 @@ const QuotationPage = () => {
     shade: "",
     rate: 1500.0,
     gstRate: null, // default per-row GST uses top-level GST state
+    discountRate: 0, // new: per-row discount percent (0-100)
   });
-
-  // ---- ADD: ARC / MATERIAL / ITEM dropdowns with dynamic add ----
+const [editingRowSn, setEditingRowSn] = useState(null); // SN of row being edited (null = none)
+const [editRowData, setEditRowData] = useState(null);   // temporary edit buffer for the row
   const [arcOptions, setArcOptions] = useState(["4700115720"]); // sample default
   const [materialOptions, setMaterialOptions] = useState(["5406A0087"]);
   const [itemOptions, setItemOptions] = useState(["00030"]);
@@ -193,9 +199,6 @@ const QuotationPage = () => {
       setNewRow((prev) => ({ ...prev, [field]: value }));
     }
   };
-
-  // compute derived preview for the newRow (area & amount)
-  // UPDATED: takes measurementUnit into account and returns both display area and area in m2
   const computeRowDerived = (row) => {
     const width = Number(row.width || 0);
     const drop = Number(row.drop || 0);
@@ -242,14 +245,8 @@ const QuotationPage = () => {
     "Payment 20% advance & rest payment after supplying and fixing the blinds at same day.",
     "Fixing charges will be extra 150/- Per Pic",
   ]);
-
-  
   const [savedNotes, setSavedNotes] = useState([...notes]);
-
-  
   const [isEditingNotes, setIsEditingNotes] = useState(true);
-
-  
   const updateNote = (index, value) => {
     const copy = [...notes];
     copy[index] = value;
@@ -280,10 +277,6 @@ const QuotationPage = () => {
     const combined = Object.values(item).join(" ").toLowerCase();
     return combined.includes(filterText.toLowerCase());
   });
-
-  const totalItems = filteredData.length;
-
-  
   const addRow = () => {
     const derived = computeRowDerived(newRow);
     const nextSN = tableData.length
@@ -291,37 +284,37 @@ const QuotationPage = () => {
       : 1;
 
     const rowToInsert = {
-      sn: nextSN,
-      width: Number(newRow.width || 0),
-      drop: Number(newRow.drop || 0),
-      nos: Number(newRow.nos || 0),
-      room: newRow.room || "",
-      shade: newRow.shade || "",
-      rate: Number(newRow.rate || 0),
-      
-      area: derived.totalArea_m2,
-      amount: derived.amount,
-      gstRate: newRow.gstRate == null ? null : Number(newRow.gstRate), 
-      unit: measurementUnit, 
-    };
+  sn: nextSN,
+  width: Number(newRow.width || 0),
+  drop: Number(newRow.drop || 0),
+  nos: Number(newRow.nos || 0),
+  room: newRow.room || "",
+  shade: newRow.shade || "",
+  rate: Number(newRow.rate || 0),
+  area: derived.totalArea_m2,
+  amount: derived.amount,
+  gstRate: newRow.gstRate == null ? null : Number(newRow.gstRate), 
+  discountRate: newRow.discountRate == null ? 0 : Number(newRow.discountRate), // NEW
+  unit: measurementUnit, 
+};
+
 
     setTableData((prev) => [...prev, rowToInsert]);
-
-   
-    setNewRow({
-      width: 100,
-      drop: 115,
-      nos: 1,
-      room: "ROOM",
-      shade: "",
-      rate: 1500.0,
-    });
   };
 
   
   const deleteRow = (sn) => {
-    setTableData((prev) => prev.filter((r) => r.sn !== sn));
-  };
+  setTableData((prev) => {
+    const newData = prev.filter((row) => row.sn !== sn);
+
+    // reassign serial numbers
+    return newData.map((row, index) => ({
+      ...row,
+      sn: index + 1
+    }));
+  });
+};
+
   
   const updateRowFieldBySN = (sn, field, value) => {
     setTableData((prev) =>
@@ -335,6 +328,7 @@ const QuotationPage = () => {
             "nos",
             "rate",
             "gstRate",
+            "discountRate",
             "amount",
             "area",
           ].includes(field)
@@ -346,10 +340,78 @@ const QuotationPage = () => {
       })
     );
   };
+  // start editing a row: copy row data into edit buffer
+const startEditRow = (sn) => {
+  const row = tableData.find((r) => r.sn === sn);
+  if (!row) return;
+  // clone row into edit buffer (strings for inputs are fine, will parse on save)
+  setEditRowData({
+  sn: row.sn,
+  width: row.width,
+  drop: row.drop,
+  nos: row.nos,
+  room: row.room,
+  shade: row.shade,
+  rate: row.rate,
+  gstRate: row.gstRate == null ? null : row.gstRate,
+  discountRate: row.discountRate == null ? 0 : row.discountRate, // NEW
+  unit: row.unit || measurementUnit,
+});
 
-  
+  setEditingRowSn(sn);
+};
 
-// Add this helper near other helpers in your file
+// cancel editing (discard changes)
+const cancelEditRow = () => {
+  setEditingRowSn(null);
+  setEditRowData(null);
+};
+
+// save edited row: compute derived area/amount and update tableData
+const saveEditRow = () => {
+  if (!editRowData) return;
+
+  // compute derived fields using your existing helper; ensure it expects the same shape
+  const derived = computeRowDerived({
+    width: Number(editRowData.width || 0),
+    drop: Number(editRowData.drop || 0),
+    nos: Number(editRowData.nos || 0),
+    rate: Number(editRowData.rate || 0),
+  });
+
+  setTableData((prev) =>
+    prev.map((r) => {
+      if (r.sn !== editRowData.sn) return r;
+      return {
+        ...r,
+        width: Number(editRowData.width || 0),
+        drop: Number(editRowData.drop || 0),
+        nos: Number(editRowData.nos || 0),
+        room: editRowData.room,
+        shade: editRowData.shade,
+        rate: Number(editRowData.rate || 0),
+        gstRate:
+          editRowData.gstRate == null
+            ? null
+            : Number(editRowData.gstRate),
+        discountRate:
+    editRowData.discountRate == null
+      ? 0
+      : Number(editRowData.discountRate), // NEW    
+        // derived values
+        area: derived.totalArea_m2,
+        amount: derived.amount,
+        // keep unit if needed
+        unit: editRowData.unit || measurementUnit,
+      };
+    })
+  );
+
+  // clear edit state
+  setEditingRowSn(null);
+  setEditRowData(null);
+};
+
 const dataUrlToBase64 = (dataUrl) => {
   // dataUrl is like "data:image/png;base64,AAAA..."
   const parts = dataUrl.split(",");
@@ -358,8 +420,6 @@ const dataUrlToBase64 = (dataUrl) => {
 
 const exportToExcel = async () => {
   try {
-    // 1) Build the same rows you had before (or reuse the logic)
-    // We'll create a workbook and worksheet, then add rows one-by-one so we can also merge & style.
     const workbook = new ExcelJS.Workbook();
     workbook.creator = headerTitle || "Quotation";
     const sheet = workbook.addWorksheet("Quotation");
@@ -377,11 +437,10 @@ const exportToExcel = async () => {
       { header: "", key: "I", width: 12 },
       { header: "", key: "J", width: 14 },
       { header: "", key: "K", width: 18 },
-      { header: "", key: "L", width: 12 },
+      { header: "", key: "L", width: 18 },
+      { header: "", key: "M", width: 18 },
+      { header: "", key: "N", width: 12 },
     ];
-
-    // 2) Header rows (mirrors pushRow calls)
-    // We'll write to row numbers explicitly so we can merge ranges.
     let r = 1;
     sheet.mergeCells(r, 1, r, 12);
     sheet.getCell(r, 1).value = headerTitle;
@@ -461,6 +520,8 @@ const exportToExcel = async () => {
       "GST (%)",
       "G.S.T. AMT",
       "AMOUNT",
+      "DISCOUNT (%)",   // NEW
+  "DISCOUNT AMT",   // NEW
       "TOTAL AMT",
     ];
     sheet.getRow(r).values = headerRowValues;
@@ -483,6 +544,8 @@ const exportToExcel = async () => {
         Number(gstPercent.toFixed(2)),
         Number(rd.gst.toFixed(2)),
         Number(rd.amount.toFixed(2)),
+         Number((rd.discountRate || 0).toFixed(2)), // DISCOUNT (%)
+  Number((rd.discountAmount || 0).toFixed(2)), // DISCOUNT AMT
         Number(rd.total.toFixed(2)),
       ];
       sheet.getRow(r).values = rowVals;
@@ -498,32 +561,39 @@ const exportToExcel = async () => {
       r++;
     });
 
-    // Blank row then totals (similar to your previous rows)
-    r++;
-    const nosRow = sheet.getRow(r);
-    nosRow.getCell(1).value = "Total NOS";
-    nosRow.getCell(1).font = { bold: true };
-    nosRow.getCell(2).value = totals.nos;
-    nosRow.getCell(10).value = "Amount";
-    nosRow.getCell(10).font = { bold: true };
-    nosRow.getCell(11).value = Number(totals.amount.toFixed(2));
-    r++;
+    
+r++;
 
-    const areaRow = sheet.getRow(r);
-    areaRow.getCell(1).value = "Total Area (m2)";
-    areaRow.getCell(1).font = { bold: true };
-    areaRow.getCell(2).value = Number(totals.area.toFixed(2));
-    areaRow.getCell(10).value = "GST Amt";
-    areaRow.getCell(10).font = { bold: true };
-    areaRow.getCell(11).value = Number(totals.gst.toFixed(2));
-    r++;
+const nosRow = sheet.getRow(r);
+nosRow.getCell(1).value = "Total NOS";
+nosRow.getCell(1).font = { bold: true };
+nosRow.getCell(2).value = totals.nos;
+r++;
 
-    r++;
-    const totalRow = sheet.getRow(r);
-    totalRow.getCell(10).value = "Total Amt";
-    totalRow.getCell(10).font = { bold: true };
-    totalRow.getCell(11).value = Number(totals.total.toFixed(2));
-    r += 2;
+const areaRow = sheet.getRow(r);
+areaRow.getCell(1).value = "Total Area (m2)";
+areaRow.getCell(1).font = { bold: true };
+areaRow.getCell(2).value = Number(totals.area.toFixed(2));
+r++;
+
+const amountRow = sheet.getRow(r);
+amountRow.getCell(1).value = "Amount";
+amountRow.getCell(1).font = { bold: true };
+amountRow.getCell(2).value = Number(totals.amount.toFixed(2));
+r++;
+
+const gstAmtRow = sheet.getRow(r);
+gstAmtRow.getCell(1).value = "GST Amount";
+gstAmtRow.getCell(1).font = { bold: true };
+gstAmtRow.getCell(2).value = Number(totals.gst.toFixed(2));
+r++;
+
+const totalRow = sheet.getRow(r);
+totalRow.getCell(1).value = "Grand Total";
+totalRow.getCell(1).font = { bold: true };
+totalRow.getCell(2).value = Number(totals.total.toFixed(2));
+r += 2;
+
 
     // NOTES - write saved notes if present
     const notesToWrite = savedNotes && savedNotes.length ? savedNotes : notes;
@@ -538,44 +608,29 @@ const exportToExcel = async () => {
         r++;
       });
     }
-
-    // 3) Now embed watermark image (if watermarkUrl is provided)
     if (watermarkUrl) {
-      // create semi-transparent data URL using your existing helper
       const wmDataUrl = await createImageDataUrlWithOpacity(watermarkUrl, 0.12);
       const base64 = dataUrlToBase64(wmDataUrl);
-
-      // Determine extension from dataURL
       const ext = wmDataUrl.startsWith("data:image/png") ? "png" : "jpeg";
-
-      // workbook.addImage accepts base64 string + extension
       const imageId = workbook.addImage({
         base64: base64,
         extension: ext,
       });
 
-      // place the image roughly centered across the sheet's printable area:
-      // We'll place from cell B3 to J20 (example) - adjust as needed.
-      // You can compute ext.width/height in pixels; here we use ext to cover many cells.
       sheet.addImage(imageId, {
         tl: { col: 1, row: 3 }, // top-left cell index where image starts (0-based)
         ext: { width: 1100, height: 600 }, // pixel width/height - adjust to taste
         editAs: "absolute",
       });
     }
-
-    // 4) Finalize workbook to buffer and save using file-saver
     const buf = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: "application/octet-stream" });
     saveAs(blob, "quotation.xlsx");
   } catch (err) {
     console.error("ExcelJS export failed:", err);
-    // fallback: call existing exportToExcel that uses SheetJS if needed
-    exportToExcel();
+    alert("Export to Excel failed. See console for details.");
   }
 };
-
-
 const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
   
   return new Promise((resolve, reject) => {
@@ -669,6 +724,8 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
       "GST (%)",
       "G.S.T. AMT",
       "AMOUNT",
+      "DISCOUNT (%)",    // NEW
+    "DISCOUNT AMT",    // NEW
       "TOTAL AMT",
     ],
   ];
@@ -684,6 +741,8 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
     (r.gstRate == null ? gstRate : r.gstRate).toFixed(2),
     r.gst.toFixed(2),
     r.amount.toFixed(2),
+    (r.discountRate || 0).toFixed(2),       // DISCOUNT %
+  (r.discountAmount || 0).toFixed(2),     // DISCOUNT AMT
     r.total.toFixed(2),
   ]);
 
@@ -692,7 +751,7 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
     head: head,
     body: body,
     theme: "grid",
-    styles: { fontSize: 7, cellPadding: 3 },
+    styles: { fontSize: 7, cellPadding: 2 },
     headStyles: { textColor: [0, 0, 0], fillColor: [255, 255, 255] },
     columnStyles: {
       3: { halign: "center" },
@@ -704,64 +763,68 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
       11: { halign: "right" },
     },
   });
-
-  // where table ended
   let finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : 92;
-  finalY += 8;
-
-  // Left totals
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const leftMargin = 14;
+  const rightMargin = 14;
+  const bottomMargin = 14; // keep some breathing room from page bottom
+  const topMargin = 20;
+  const notesToWrite = savedNotes && savedNotes.length ? savedNotes : notes;
+  const totalsBlockHeight = 50; // space for totals lines (Amount/GST/Total etc)
+  const notesHeaderHeight = notesToWrite && notesToWrite.length ? 8 : 0; // "NOTE:" label
+  const perNoteHeight = 6; // height used per note line
+  const notesHeight = (notesToWrite ? notesToWrite.length : 0) * perNoteHeight;
+  const spacingBetweenTableAndTotals = 8;
+  const requiredSpace = spacingBetweenTableAndTotals + totalsBlockHeight + notesHeaderHeight + notesHeight + 8;
+  if (finalY + requiredSpace > pageHeight - bottomMargin) {
+    doc.addPage();
+    finalY = topMargin;
+  } else {
+    finalY += spacingBetweenTableAndTotals;
+  }
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
-  doc.text(`Total NOS: ${totals.nos}`, 14, finalY + 10);
-  doc.text(`Total Area: ${totals.area.toFixed(2)}`, 14, finalY + 18);
-
-  // Right totals
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const rightX = pageWidth - 14;
-  doc.setFont("helvetica", "bold");
-  doc.text(`Amount: ${totals.amount.toFixed(2)}`, rightX, finalY + 10, {
-    align: "right",
-  });
-  doc.text(`GST Amt: ${totals.gst.toFixed(2)}`, rightX, finalY + 18, {
-    align: "right",
-  });
-  doc.text(`Total Amt: ${totals.total.toFixed(2)}`, rightX, finalY + 26, {
-    align: "right",
-  });
-
-  // NOTES
-  const notesStartY = finalY + 40;
-  doc.setFont("helvetica", "bold");
-  doc.text("NOTE:", 14, notesStartY);
-  doc.setFont("helvetica", "normal");
-  const notesToWrite = savedNotes && savedNotes.length ? savedNotes : notes;
-  notesToWrite.forEach((noteText, idx) => {
-    const lineY = notesStartY + 6 + idx * 6;
-    const prefix = String(idx + 1).padStart(2, "0") + ". ";
-    doc.text(prefix + noteText, 20, lineY);
-  });
-
-  
+  doc.text(`Total NOS: ${totals.nos}`, leftMargin, finalY + 10);
+  doc.text(`Total Area: ${totals.area.toFixed(2)}`, leftMargin, finalY + 18);
+  doc.text(`Amount: ${totals.amount.toFixed(2)}`, leftMargin, finalY + 26);
+doc.text(`GST Amount: ${totals.gst.toFixed(2)}`, leftMargin, finalY + 34);
+doc.text(`Grand Total: ${totals.total.toFixed(2)}`, leftMargin, finalY + 42);
+  const notesStartY = finalY + totalsBlockHeight; // totalsBlockHeight provides separation
+  if (notesToWrite && notesToWrite.length) {
+    doc.setFont("helvetica", "bold");
+    doc.text("NOTE:", leftMargin, notesStartY + 6);
+    doc.setFont("helvetica", "normal");
+    notesToWrite.forEach((noteText, idx) => {
+      const lineY = notesStartY + 6 + (idx + 1) * perNoteHeight;
+      
+      if (lineY > pageHeight - bottomMargin) {
+        doc.addPage();
+        const newNotesBaseY = topMargin;
+        doc.setFont("helvetica", "bold");
+        doc.text("NOTE (contd.):", leftMargin, newNotesBaseY);
+        doc.setFont("helvetica", "normal");
+        const continuedLineY = newNotesBaseY + perNoteHeight;
+        const prefixCont = String(idx + 1).padStart(2, "0") + ". ";
+        doc.text(prefixCont + noteText, 20, continuedLineY);
+      } else {
+        const prefix = String(idx + 1).padStart(2, "0") + ". ";
+        doc.text(prefix + noteText, 20, lineY);
+      }
+    });
+  }
   if (watermarkUrl) {
     try {
-      
       const wmDataUrl = await createImageDataUrlWithOpacity(watermarkUrl, 0.12);
-
-      
       const pageCount = doc.internal.getNumberOfPages();
       for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
         const pw = doc.internal.pageSize.getWidth();
         const ph = doc.internal.pageSize.getHeight();
-
-        
         const targetWidth = pw * 1;
-        
         const targetHeight = targetWidth * 0.6;
-
         const x = (pw - targetWidth) / 2;
         const y = (ph - targetHeight) / 2;
-
         try {
           doc.addImage(wmDataUrl, "PNG", x, y, targetWidth, targetHeight, undefined, "FAST");
         } catch (addErr) {
@@ -781,100 +844,289 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
   }
   doc.save("quotation.pdf");
 };
-
-
-
-  // ------------------ TABLE COLUMNS ------------------
   const widthLabel = measurementUnit === "cm" ? "WIDTH (cm)" : "WIDTH (ft)";
   const dropLabel = measurementUnit === "cm" ? "DROP (cm)" : "DROP (ft)";
 
   const columns = [
-    { name: "SN", selector: (row) => row.sn, sortable: true, width: "70px" },
-    { name: widthLabel, selector: (row) => row.width },
-    { name: dropLabel, selector: (row) => row.drop },
-    { name: "NOS", selector: (row) => row.nos },
-    { name: "ROOM", selector: (row) => row.room },
-    {
-      name: "AREA (m²)",
-      selector: (row) => row.area,
-      format: (row) => row.area.toFixed(2),
-    },
-    { name: "SHADE", selector: (row) => row.shade },
-    {
-      name: "RATE",
-      selector: (row) => row.rate,
-      format: (row) => row.rate.toFixed(2),
-    },
+  { name: "SN", selector: (row) => row.sn, sortable: true, width: "70px" },
+  {
+    name: widthLabel,
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          className="form-control form-control-sm"
+          value={editRowData?.width ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, width: e.target.value }))
+          }
+          style={{ width: 120 }}
+        />
+      ) : (
+        row.width
+      ),
+    sortable: true,
+  },
 
-    // NEW: GST % editable column
-    {
-  name: "GST (%)",
-  cell: (row) => (
-    <select
-      className="form-select form-select-sm"
-      // show the row's explicit gstRate when set; otherwise show global gstRate
-      value={String(row.gstRate ?? gstRate)}
-      onChange={(e) =>
-        // save numeric value into tableData (updateRowFieldBySN already parses numbers)
-        updateRowFieldBySN(row.sn, "gstRate", Number(e.target.value))
-      }
-      style={{ width: 90 }}
-    >
-      <option value="0">0%</option>
-      <option value="2">2%</option>
-      <option value="5">5%</option>
-      <option value="10">10%</option>
-      <option value="12">12%</option>
-      <option value="15">15%</option>
-      <option value="18">18%</option>
-      <option value="20">20%</option>
-      <option value="28">28%</option>
-    </select>
-  ),
-  ignoreRowClick: true,
-  allowOverflow: true,
-  width: "110px",
+  // DROP column
+  {
+    name: dropLabel,
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          className="form-control form-control-sm"
+          value={editRowData?.drop ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, drop: e.target.value }))
+          }
+          style={{ width: 90 }}
+        />
+      ) : (
+        row.drop
+      ),
+  },
+
+  // NOS column
+  {
+    name: "NOS",
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          className="form-control form-control-sm"
+          value={editRowData?.nos ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, nos: e.target.value }))
+          }
+          style={{ width: 90 }}
+        />
+      ) : (
+        row.nos
+      ),
+    
+  },
+
+  // ROOM
+  {
+    name: "ROOM",
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          className="form-control form-control-sm"
+          value={editRowData?.room ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, room: e.target.value }))
+          }
+          style={{ minWidth: 80 }}
+        />
+      ) : (
+        row.room
+      ),
+  },
+
+  // AREA (m2) — read-only, formatted
+  {
+    name: "AREA (m²)",
+    selector: (row) => row.area,
+    format: (row) => Number(row.area).toFixed(2),
+    right: true,
+  },
+
+  // SHADE
+  {
+    name: "SHADE",
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          className="form-control form-control-sm"
+          value={editRowData?.shade ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, shade: e.target.value }))
+          }
+          style={{ minWidth: 80 }}
+        />
+      ) : (
+        row.shade
+      ),
+  },
+
+  // RATE
+  {
+    name: "RATE",
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          className="form-control form-control-sm"
+          value={editRowData?.rate ?? ""}
+          onChange={(e) =>
+            setEditRowData((prev) => ({ ...prev, rate: e.target.value }))
+          }
+          style={{ width: 220 }}
+        />
+      ) : (
+        Number(row.rate).toFixed(2)
+      ),
+  },
+
+  // GST (%) — editable select when editing
+  {
+    name: "GST (%)",
+    cell: (row) =>
+      editingRowSn === row.sn ? (
+        <select
+          className="form-select form-select-sm"
+          value={String(editRowData?.gstRate ?? gstRate)}
+          onChange={(e) =>
+            setEditRowData((prev) => ({
+              ...prev,
+              gstRate: e.target.value === "" ? null : Number(e.target.value),
+            }))
+          }
+          style={{ width: 90 }}
+        >
+          <option value="0">0%</option>
+          <option value="2">2%</option>
+          <option value="5">5%</option>
+          <option value="10">10%</option>
+          <option value="12">12%</option>
+          <option value="15">15%</option>
+          <option value="18">18%</option>
+          <option value="20">20%</option>
+          <option value="28">28%</option>
+        </select>
+      ) : (
+        (row.gstRate == null ? gstRate : row.gstRate).toFixed(2)
+      ),
+    ignoreRowClick: true,
+    allowOverflow: true,
+    width: "110px",
+  },
+
+  // G.S.T. AMT
+{
+  name: "G.S.T. AMT",
+  selector: (row) => row.gst,
+  format: (row) => Number(row.gst).toFixed(2),
 },
 
-    // GST Amount (calculated)
-    {
-      name: "G.S.T. AMT",
-      selector: (row) => row.gst,
-      format: (row) => row.gst.toFixed(2),
-    },
+// AMOUNT (gross before discount)
+{
+  name: "AMOUNT",
+  selector: (row) => row.amount,
+  format: (row) => Number(row.amount).toFixed(2),
+},
 
-    {
-      name: "AMOUNT",
-      selector: (row) => row.amount,
-      format: (row) => row.amount.toFixed(2),
-    },
+// DISCOUNT (%) — editable dropdown (per-row)
+{
+  name: "DISCOUNT (%)",
+  cell: (row) =>
+    editingRowSn === row.sn ? (
+      <select
+        className="form-select form-select-sm"
+        value={String(editRowData?.discountRate ?? row.discountRate ?? 0)}
+        onChange={(e) =>
+          setEditRowData((prev) => ({
+            ...prev,
+            discountRate: e.target.value === "" ? 0 : Number(e.target.value),
+          }))
+        }
+        style={{ width: 90 }}
+      >
+        <option value="0">0%</option>
+        <option value="1">1%</option>
+        <option value="2">2%</option>
+        <option value="3">3%</option>
+        <option value="5">5%</option>
+        <option value="7.5">7.5%</option>
+        <option value="10">10%</option>
+        <option value="12">12%</option>
+        <option value="15">15%</option>
+        <option value="18">18%</option>
+        <option value="20">20%</option>
+        <option value="25">25%</option>
+      </select>
+    ) : (
+      (row.discountRate ?? 0).toFixed(2)
+    ),
+  ignoreRowClick: true,
+  allowOverflow: true,
+  width: "120px",
+},
 
-    {
-      name: "TOTAL AMT",
-      selector: (row) => row.total,
-      format: (row) => row.total.toFixed(2),
-    },
+// DISCOUNT AMT (read-only)
+{
+  name: "DISCOUNT AMT",
+  selector: (row) => row.discountAmount,
+  format: (row) => Number(row.discountAmount || 0).toFixed(2),
+  right: true,
+},
 
-    {
-      name: "ACTION",
-      cell: (row) => (
-        <button
-          className="btn btn-sm btn-outline-danger"
-          onClick={() => deleteRow(row.sn)}
-        >
-          Delete
-        </button>
-      ),
-      ignoreRowClick: true,
-      allowOverflow: true,
-      button: true,
-      width: "100px",
-    },
-  ];
 
-  // ------------------ RETURN JSX ------------------
+  // TOTAL AMT
+  {
+    name: "TOTAL AMT",
+    selector: (row) => row.total,
+    format: (row) => Number(row.total).toFixed(2),
+  },
+
+  // ACTION column: Edit / Save / Cancel / Delete
+  {
+    name: "ACTION",
+    cell: (row) => {
+      if (editingRowSn === row.sn) {
+        // Save & Cancel when editing
+        return (
+          <div className="d-flex gap-1">
+            <button
+              className="btn btn-sm btn-success"
+              onClick={() => saveEditRow()}
+            >
+              Save
+            </button>
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => cancelEditRow()}
+            >
+              Cancel
+            </button>
+          </div>
+        );
+      }
+      // default action buttons (Edit + Delete)
+      return (
+        <div className="d-flex gap-1">
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => startEditRow(row.sn)}
+          >
+            Edit
+          </button>
+          <button
+            className="btn btn-sm btn-outline-danger"
+            onClick={() => deleteRow(row.sn)}
+          >
+            Delete
+          </button>
+        </div>
+      );
+    },
+    ignoreRowClick: true,
+    allowOverflow: true,
+    button: true,
+    width: "140px",
+  },
+];
+
   return (
-    <div className="quotation-page container mt-4 mb-5 p-4 border rounded bg-white">
+    <div className="quotation-page mt-4 mb-5 p-4 border rounded bg-white">
       {/* Header */}
       <div className="text-center mb-2">
         {/* Title (editable) - use textarea so long titles wrap to next line */}
@@ -1043,26 +1295,6 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
 
       {/* Controls */}
       <div className="d-flex justify-content-between align-items-center mb-2 gap-2">
-        <div className="d-flex align-items-center gap-2">
-          <label className="mb-0">Show</label>
-          <select
-            className="form-select form-select-sm"
-            value={perPage}
-            onChange={(e) => {
-              setPerPage(parseInt(e.target.value, 10));
-              setCurrentPage(1);
-            }}
-            style={{ width: "90px" }}
-          >
-            <option value={5}>5</option>
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={30}>30</option>
-            <option value={40}>40</option>
-          </select>
-          <label className="mb-0">entries</label>
-        </div>
-
         <input
           type="text"
           className="form-control form-control-sm"
@@ -1071,7 +1303,6 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
           onChange={(e) => setFilterText(e.target.value)}
           style={{ maxWidth: 364 }}
         />
-
         {/* GST Dropdown */}
         <div className="d-flex align-items-center gap-2">
           <label className="mb-0">GST:</label>
@@ -1324,37 +1555,41 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
       </div>
 
       {/* Data Table */}
-      <DataTable
+            <DataTable
         columns={columns}
         data={filteredData}
         highlightOnHover
         responsive
         pagination
         paginationPerPage={perPage}
+        paginationTotalRows={filteredData.length}
+        onChangeRowsPerPage={(newPerPage, page) => {
+          setPerPage(Number(newPerPage));
+          setCurrentPage(1);
+        }}
+        onChangePage={(page) => {
+          setCurrentPage(page);
+        }}
+        paginationDefaultPage={currentPage}
         paginationRowsPerPageOptions={[5, 10, 20, 30, 40]}
       />
+<div className="mt-2">
+  <div className="d-flex flex-column fw-bold" style={{ maxWidth: 420 }}>
+    <div className="mb-1">Total NOS: {totals.nos}</div>
+    <div className="mb-1">Total Area: {totals.area.toFixed(2)}</div>
 
-      {/* Totals */}
-      <div className="mt-2">
-        <div className="d-flex justify-content-between fw-bold">
-          {/* Left column: NOS above AREA */}
-          <div className="d-flex flex-column">
-            <div className="mb-1">Total NOS: {totals.nos}</div>
-            <div>Total Area: {totals.area.toFixed(2)}</div>
-          </div>
+    {/* a small separator for visual grouping */}
+    <div style={{ height: 6 }} />
 
-          {/* Right column: Amount above GST above Total (right-aligned) */}
-          <div className="d-flex flex-column text-end">
-            <div className="mb-1">Amount: {totals.amount.toFixed(2)}</div>
-            <div className="mb-1">GST Amt: {totals.gst.toFixed(2)}</div>
-            <div>Total Amt: {totals.total.toFixed(2)}</div>
-          </div>
-        </div>
-      </div>
+    <div className="mb-1">Amount: {totals.amount.toFixed(2)}</div>
+    <div className="mb-1">GST Amt: {totals.gst.toFixed(2)}</div>
 
-      <div className="text-end text-muted mt-2">Total Items: {totalItems}</div>
-
-      {/* Editable Notes area (REPLACE previous static notes block with this) */}
+    {/* Grand Total label */}
+    <div style={{ fontSize: "1.05rem", marginTop: 6 }}>
+      Grand Total: {totals.total.toFixed(2)}
+    </div>
+  </div>
+</div>
       <div className="mt-3">
         <div className="d-flex justify-content-between align-items-start">
           <h6 className="fw-bold mb-2">NOTE:</h6>
@@ -1444,13 +1679,6 @@ const createImageDataUrlWithOpacity = (url, opacity = 0.12) => {
       </div>
       <div className="d-flex gap-3 justify-content-end mt-4">
         <DropdownButton id="export" title="Export" variant="outline-primary">
-          {/* <Dropdown.Item
-            as={CSVLink}
-            data={computedData}
-            filename="quotation.csv"
-          >
-            Download CSV
-          </Dropdown.Item> */}
           <Dropdown.Item onClick={exportToExcel}>Download Excel</Dropdown.Item>
           <Dropdown.Item onClick={exportToPDF}>Download PDF</Dropdown.Item>
         </DropdownButton>
